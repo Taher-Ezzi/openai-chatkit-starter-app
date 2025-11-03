@@ -5,25 +5,26 @@ export const runtime = "edge";
 
 const ALLOWED_ORIGIN = "https://relaxed-hummingbird-a87f42.netlify.app";
 const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
-const SESSION_COOKIE_NAME = "chatkit_session_id";
-const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-// ---------- CORS helper ----------
-function corsHeaders(): Record<string, string> {
+// ✅ Always include CORS headers
+function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400",
+    "Access-Control-Allow-Credentials": "true",
   };
 }
 
-// ---------- OPTIONS (Preflight) ----------
+// ✅ Handle preflight requests
 export async function OPTIONS() {
-  return new NextResponse(null, { status: 204, headers: corsHeaders() });
+  return new NextResponse(null, {
+    status: 204,
+    headers: corsHeaders(),
+  });
 }
 
-// ---------- POST ----------
+// ✅ Handle POST (main route)
 export async function POST(req: Request) {
   try {
     const openaiApiKey = process.env.OPENAI_API_KEY;
@@ -36,14 +37,14 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const resolvedWorkflowId =
       body?.workflow?.id ?? body?.workflowId ?? WORKFLOW_ID;
+
     if (!resolvedWorkflowId)
       return NextResponse.json(
         { error: "Missing workflow id" },
         { status: 400, headers: corsHeaders() }
       );
 
-    const apiBase = process.env.CHATKIT_API_BASE ?? DEFAULT_CHATKIT_BASE;
-    const upstream = await fetch(`${apiBase}/v1/chatkit/sessions`, {
+    const upstream = await fetch("https://api.openai.com/v1/chatkit/sessions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -60,16 +61,14 @@ export async function POST(req: Request) {
       }),
     });
 
-    const data = (await upstream.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const data = await upstream.json().catch(() => ({}));
 
-    if (!upstream.ok)
+    if (!upstream.ok) {
       return NextResponse.json(
         { error: "Failed to create session", details: data },
         { status: upstream.status, headers: corsHeaders() }
       );
+    }
 
     return NextResponse.json(
       {
@@ -85,4 +84,9 @@ export async function POST(req: Request) {
       { status: 500, headers: corsHeaders() }
     );
   }
+}
+
+// ✅ Default GET to support CORS too
+export async function GET() {
+  return new NextResponse("OK", { headers: corsHeaders() });
 }
