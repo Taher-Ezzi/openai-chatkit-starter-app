@@ -76,7 +76,11 @@ export async function POST(request: Request): Promise<Response> {
       }),
     });
 
-    const data = (await upstream.json().catch(() => ({}))) as any;
+    // <-- LINT-FIX: use Record<string, unknown> instead of `any`
+    const data = (await upstream.json().catch(() => ({}))) as Record<
+      string,
+      unknown
+    >;
 
     if (!upstream.ok) {
       return corsResponse(
@@ -88,8 +92,8 @@ export async function POST(request: Request): Promise<Response> {
 
     return corsResponse(
       {
-        client_secret: data.client_secret,
-        expires_after: data.expires_after,
+        client_secret: (data as any).client_secret ?? null,
+        expires_after: (data as any).expires_after ?? null,
       },
       200,
       sessionCookie
@@ -145,10 +149,7 @@ async function resolveUserId(request: Request): Promise<{
   };
 }
 
-function getCookieValue(
-  cookieHeader: string | null,
-  name: string
-): string | null {
+function getCookieValue(cookieHeader: string | null, name: string): string | null {
   if (!cookieHeader) return null;
   const cookies = cookieHeader.split(";");
   for (const cookie of cookies) {
