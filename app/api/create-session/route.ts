@@ -16,6 +16,13 @@ interface CreateSessionRequestBody {
   };
 }
 
+interface ChatkitSessionResponse {
+  client_secret?: string | null;
+  expires_after?: string | null;
+  error?: string | null;
+  [key: string]: unknown;
+}
+
 const DEFAULT_CHATKIT_BASE = "https://api.openai.com";
 const SESSION_COOKIE_NAME = "chatkit_session_id";
 const SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -76,28 +83,22 @@ export async function POST(request: Request): Promise<Response> {
       }),
     });
 
-    // <-- LINT-FIX: use Record<string, unknown> instead of `any`
-    const data = (await upstream.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
+    const data = (await upstream.json().catch(() => ({}))) as ChatkitSessionResponse;
 
     if (!upstream.ok) {
       return corsResponse(
-        { error: data?.error ?? "Failed to create session", details: data },
+        { error: data.error ?? "Failed to create session", details: data },
         upstream.status,
         sessionCookie
       );
     }
 
-    return corsResponse(
-      {
-        client_secret: (data as any).client_secret ?? null,
-        expires_after: (data as any).expires_after ?? null,
-      },
-      200,
-      sessionCookie
-    );
+    const responsePayload = {
+      client_secret: data.client_secret ?? null,
+      expires_after: data.expires_after ?? null,
+    };
+
+    return corsResponse(responsePayload, 200, sessionCookie);
   } catch (err) {
     console.error("Create session error", err);
     return corsResponse({ error: "Unexpected error" }, 500, sessionCookie);
