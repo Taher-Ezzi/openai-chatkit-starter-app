@@ -62,6 +62,15 @@ export function ChatKitPanel({
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
 
+  // --- ADDED: State and Refs for OpenAI Voice ---
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const chatKitRef = useRef<HTMLElement | null>(null); // For TTS
+  const [isSendingAudio, setIsSendingAudio] = useState(false);
+  const [activeAudio, setActiveAudio] = useState<HTMLAudioElement | null>(null);
+  // --- END ADDED ---
+
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
   }, []);
@@ -152,10 +161,16 @@ export function ChatKitPanel({
         window.customElements?.get("openai-chatkit") ? "ready" : "pending"
       );
     }
+    // --- ADDED: Stop any playing audio on chat reset ---
+    if (activeAudio) {
+      activeAudio.pause();
+      setActiveAudio(null);
+    }
+    // --- END ADDED ---
     setIsInitializingSession(true);
     setErrors(createInitialErrors());
     setWidgetInstanceKey((prev) => prev + 1);
-  }, []);
+  }, [activeAudio]); // --- MODIFIED: Added activeAudio dependency ---
 
   const getClientSecret = useCallback(
     async (currentSecret: string | null) => {
@@ -261,6 +276,82 @@ export function ChatKitPanel({
     [isWorkflowConfigured, setErrorState]
   );
 
+  // --- ADDED: Helper function for Text-to-Speech (TTS) ---
+  const playAudioFromText = useCallback(
+    async (text: string) => {
+      if (!isBrowser) return;
+
+      // Stop any currently playing audio
+      if (activeAudio) {
+        activeAudio.pause();
+      }
+
+      // This regex cleans the JSON from the start of the string
+      const regex = /^\s*\{.*?"classification".*?\}\s*/;
+      const cleanedText = text.replace(regex, "");
+
+      if (cleanedText.trim().length === 0) {
+        return; // Don't play empty strings
+      }
+
+      try {
+        const response = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: cleanedText }),
+        });
+
+        if (!response.ok) {
+          throw new Error("Failed to fetch audio from TTS API");
+        }
+
+        const audioBlob = await response.blob();
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        setActiveAudio(audio); // Store the new audio element
+
+        audio.play();
+
+        // Handle cleanup
+        audio.addEventListener("ended", () => {
+          URL.revokeObjectURL(audioUrl);
+          setActiveAudio(null);
+        });
+      } catch (error) {
+        console.error("Error playing audio:", error);
+      }
+    },
+    [activeAudio]
+  ); // --- MODIFIED: Added activeAudio dependency ---
+  // --- END ADDED ---
+
+  // --- ADDED: useEffect to listen for bot responses (for TTS) ---
+  useEffect(() => {
+    const node = chatKitRef.current;
+    if (!node) return;
+
+    const handleResponse = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const message = customEvent.detail;
+
+      if (message.role === "assistant" && message.content) {
+        // Find the text content
+        const textBlock = message.content.find(
+          (c: { type: string }) => c.type === "text"
+        );
+        if (textBlock && textBlock.text.value) {
+          playAudioFromText(textBlock.text.value);
+        }
+      }
+    };
+
+    node.addEventListener("response", handleResponse);
+    return () => {
+      node.removeEventListener("response", handleResponse);
+    };
+  }, [playAudioFromText]);
+  // --- END ADDED ---
+
   const chatkit = useChatKit({
     api: { getClientSecret },
     theme: {
@@ -277,6 +368,87 @@ export function ChatKitPanel({
         // Enable attachments
         enabled: true,
       },
+      // --- MODIFIED: Added voice input button for Whisper ---
+      actions: [
+        {
+          id: "voice-input",
+          icon: isRecording ? "stop" : "microphone",
+          label: isRecording
+            ? "Stop"
+            : isSendingAudio
+            ? "Processing..."
+            : "Record",
+          // Disable button while recording OR processing
+          disabled: isSendingAudio,
+          onClick: async (control) => {
+            if (isRecording) {
+              // --- STOP RECORDING ---
+              mediaRecorderRef.current?.stop();
+              setIsRecording(false);
+              setIsSendingAudio(true); // Show "Processing..."
+            } else {
+              // --- START RECORDING ---
+              if (
+                !navigator.mediaDevices ||
+                !navigator.mediaDevices.getUserMedia
+              ) {
+                console.error("MediaDevices API not supported.");
+                return;
+              }
+              try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                  audio: true,
+                });
+                mediaRecorderRef.current = new MediaRecorder(stream, {
+                  mimeType: "audio/webm", // Use a common format
+                });
+                audioChunksRef.current = []; // Clear old audio
+
+                mediaRecorderRef.current.ondataavailable = (event) => {
+                  audioChunksRef.current.push(event.data);
+                };
+
+                mediaRecorderRef.current.onstop = async () => {
+                  // Audio recording stopped, now send to Whisper API
+                  const audioBlob = new Blob(audioChunksRef.current, {
+                    type: "audio/webm",
+                  });
+                  const formData = new FormData();
+                  // We must give it a file name
+                  formData.append("file", audioBlob, "recording.webm");
+
+                  try {
+                    const response = await fetch("/api/stt", {
+                      method: "POST",
+                      body: formData,
+                    });
+                    const data = await response.json();
+
+                    if (response.ok && data.transcript) {
+                      // Send the transcript to the bot
+                      control.sendMessage(data.transcript);
+                    } else {
+                      console.error("Failed to transcribe:", data.error);
+                    }
+                  } catch (error) {
+                    console.error("Error sending audio:", error);
+                  } finally {
+                    setIsSendingAudio(false); // Re-enable button
+                    // Stop the audio track to turn off the browser's "recording" icon
+                    stream.getTracks().forEach((track) => track.stop());
+                  }
+                };
+
+                mediaRecorderRef.current.start();
+                setIsRecording(true);
+              } catch (err) {
+                console.error("Error getting audio stream:", err);
+              }
+            }
+          },
+        },
+      ],
+      // --- END MODIFIED ---
     },
     threadItemActions: {
       feedback: false,
@@ -318,6 +490,12 @@ export function ChatKitPanel({
       onResponseEnd();
     },
     onResponseStart: () => {
+      // --- ADDED: Stop any playing audio when bot starts responding ---
+      if (activeAudio) {
+        activeAudio.pause();
+        setActiveAudio(null);
+      }
+      // --- END ADDED ---
       setErrorState({ integration: null, retryable: false });
     },
     onThreadChange: () => {
@@ -348,6 +526,10 @@ export function ChatKitPanel({
       <ChatKit
         key={widgetInstanceKey}
         control={chatkit.control}
+        // --- MODIFIED: Added ref for TTS and prop to hide "thinking" ---
+        ref={chatKitRef}
+        showThoughtProcess={false}
+        // --- END MODIFIED ---
         className={
           blockingError || isInitializingSession
             ? "pointer-events-none opacity-0"
