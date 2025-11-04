@@ -36,11 +36,11 @@ type ErrorState = {
 const isBrowser = typeof window !== "undefined";
 const isDev = process.env.NODE_ENV !== "production";
 
-// --- ADDED: Define SpeechRecognition type for browser API ---
+// --- MODIFIED: Disabled ESLint rule for this line ---
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 const SpeechRecognition =
   isBrowser &&
   ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
-// --- END ADDED ---
 
 const createInitialErrors = (): ErrorState => ({
   script: null,
@@ -70,7 +70,9 @@ export function ChatKitPanel({
 
   // --- ADDED: State and Refs for Voice ---
   const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef<any | null>(null); // 'any' for SpeechRecognition type
+  // --- MODIFIED: Disabled ESLint rule for this line ---
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any | null>(null);
   const chatKitRef = useRef<HTMLElement | null>(null);
   // --- END ADDED ---
 
@@ -285,6 +287,8 @@ export function ChatKitPanel({
     recognition.interimResults = false; // Only get final results
     recognition.lang = "en-US";
 
+    // --- MODIFIED: Disabled ESLint rule for this line ---
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
       const transcript = event.results[0][0].transcript;
       // Send the transcribed text to the chatbot
@@ -292,6 +296,8 @@ export function ChatKitPanel({
       setIsRecording(false);
     };
 
+    // --- MODIFIED: Disabled ESLint rule for this line ---
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
       console.error("Speech recognition error", event.error);
       setIsRecording(false);
@@ -308,11 +314,17 @@ export function ChatKitPanel({
   // --- ADDED: Helper function for Text-to-Speech ---
   const speakResponse = useCallback((text: string) => {
     if (!isBrowser || !window.speechSynthesis) return;
+    
+    // This regex looks for a JSON object at the start of the string
+    // and removes it, along with any newlines right after it.
+    const regex = /^\s*\{.*?"classification".*?\}\s*/;
+    const cleanedText = text.replace(regex, "");
+
     try {
       // Cancel any previous speech to avoid overlap
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      // You can configure voice, rate, pitch here if needed
+      const utterance = new SpeechSynthesisUtterance(cleanedText);
+      // You can optionally configure voice, rate, pitch here if needed
       // const voices = window.speechSynthesis.getVoices();
       // utterance.voice = voices[0]; // Example: set a specific voice
       window.speechSynthesis.speak(utterance);
@@ -334,6 +346,8 @@ export function ChatKitPanel({
 
       // Check if it's an assistant message with text content
       if (message.role === "assistant" && message.content) {
+        // --- MODIFIED: Disabled ESLint rule for this line ---
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const textBlock = message.content.find((c: any) => c.type === "text");
         if (textBlock && textBlock.text.value) {
           // Speak the text content
