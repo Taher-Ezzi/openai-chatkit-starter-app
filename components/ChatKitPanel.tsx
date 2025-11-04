@@ -36,6 +36,12 @@ type ErrorState = {
 const isBrowser = typeof window !== "undefined";
 const isDev = process.env.NODE_ENV !== "production";
 
+// --- ADDED: Define SpeechRecognition type for browser API ---
+const SpeechRecognition =
+  isBrowser &&
+  ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+// --- END ADDED ---
+
 const createInitialErrors = (): ErrorState => ({
   script: null,
   session: null,
@@ -61,6 +67,12 @@ export function ChatKitPanel({
       : "pending"
   );
   const [widgetInstanceKey, setWidgetInstanceKey] = useState(0);
+
+  // --- ADDED: State and Refs for Voice ---
+  const [isRecording, setIsRecording] = useState(false);
+  const recognitionRef = useRef<any | null>(null); // 'any' for SpeechRecognition type
+  const chatKitRef = useRef<HTMLElement | null>(null);
+  // --- END ADDED ---
 
   const setErrorState = useCallback((updates: Partial<ErrorState>) => {
     setErrors((current) => ({ ...current, ...updates }));
@@ -261,6 +273,85 @@ export function ChatKitPanel({
     [isWorkflowConfigured, setErrorState]
   );
 
+  // --- ADDED: useEffect to initialize SpeechRecognition ---
+  useEffect(() => {
+    if (!SpeechRecognition) {
+      console.warn("Speech recognition not supported in this browser.");
+      return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = false; // Stop after first phrase
+    recognition.interimResults = false; // Only get final results
+    recognition.lang = "en-US";
+
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      // Send the transcribed text to the chatbot
+      chatkit.control?.sendMessage(transcript);
+      setIsRecording(false);
+    };
+
+    recognition.onerror = (event: any) => {
+      console.error("Speech recognition error", event.error);
+      setIsRecording(false);
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+    };
+
+    recognitionRef.current = recognition;
+  }, [chatkit.control]); // Depend on chatkit.control to ensure it's available
+  // --- END ADDED ---
+
+  // --- ADDED: Helper function for Text-to-Speech ---
+  const speakResponse = useCallback((text: string) => {
+    if (!isBrowser || !window.speechSynthesis) return;
+    try {
+      // Cancel any previous speech to avoid overlap
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      // You can configure voice, rate, pitch here if needed
+      // const voices = window.speechSynthesis.getVoices();
+      // utterance.voice = voices[0]; // Example: set a specific voice
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.error("Speech synthesis error", error);
+    }
+  }, []);
+  // --- END ADDED ---
+
+  // --- ADDED: useEffect to listen for bot responses (for TTS) ---
+  useEffect(() => {
+    const node = chatKitRef.current;
+    // We need the node to exist, and we should only attach this once
+    if (!node) return;
+
+    const handleResponse = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const message = customEvent.detail; // This is the message object
+
+      // Check if it's an assistant message with text content
+      if (message.role === "assistant" && message.content) {
+        const textBlock = message.content.find((c: any) => c.type === "text");
+        if (textBlock && textBlock.text.value) {
+          // Speak the text content
+          speakResponse(textBlock.text.value);
+        }
+      }
+    };
+
+    // 'response' event fires when the *full* message object is available
+    node.addEventListener("response", handleResponse);
+
+    // Cleanup listener on unmount
+    return () => {
+      node.removeEventListener("response", handleResponse);
+    };
+  }, [speakResponse]); // Re-run if speakResponse function identity changes
+  // --- END ADDED ---
+
   const chatkit = useChatKit({
     api: { getClientSecret },
     theme: {
@@ -277,6 +368,30 @@ export function ChatKitPanel({
         // Enable attachments
         enabled: true,
       },
+      // --- MODIFIED: Added voice input button ---
+      actions: [
+        {
+          id: "voice-input",
+          // Use built-in icons. 'stop' icon when recording, 'microphone' otherwise.
+          icon: isRecording ? "stop" : "microphone",
+          label: isRecording ? "Stop listening" : "Listen",
+          onClick: () => {
+            if (!recognitionRef.current) {
+              console.error("Speech recognition is not initialized.");
+              return;
+            }
+            if (isRecording) {
+              recognitionRef.current.stop();
+            } else {
+              recognitionRef.current.start();
+            }
+            setIsRecording(!isRecording);
+          },
+          // Disable the button if the browser doesn't support SpeechRecognition
+          disabled: !SpeechRecognition,
+        },
+      ],
+      // --- END MODIFIED ---
     },
     threadItemActions: {
       feedback: false,
@@ -348,6 +463,10 @@ export function ChatKitPanel({
       <ChatKit
         key={widgetInstanceKey}
         control={chatkit.control}
+        // --- MODIFIED: Added ref for TTS and prop to hide "thinking" ---
+        ref={chatKitRef}
+        showThoughtProcess={false}
+        // --- END MODIFIED ---
         className={
           blockingError || isInitializingSession
             ? "pointer-events-none opacity-0"
